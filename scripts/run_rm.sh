@@ -1,0 +1,25 @@
+CUDA_VISIBLE_DEVICES=0 python src/train_bash.py \
+    --stage rm \
+    --model_name_or_path Llama-2-7b-chat-hf \
+    --do_train \
+    --dataset rm_all \
+    --dataset_dir data/medicalgpt \
+    --template llama2 \
+    --finetuning_type lora \
+    --resume_lora_training False \
+    --checkpoint_dir outputs/output-sft-llama2/checkpoint-24000 \
+    --output_dir outputs/output-rm-llama2 \
+    --per_device_train_batch_size 1 \
+    --gradient_accumulation_steps 4 \
+    --lr_scheduler_type cosine \
+    --logging_steps 10 \
+    --save_steps 100 \
+    --learning_rate 1e-5 \
+    --num_train_epochs 1.0 \
+    --plot_loss \
+    --fp16 \
+    --evaluation_strategy steps \
+    --load_best_model_at_end \
+    --dev_ratio 0.1 \
+    --preprocessing_num_workers 32 \
+    # --max_samples 100 \

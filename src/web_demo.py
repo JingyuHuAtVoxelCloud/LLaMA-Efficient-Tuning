@@ -5,6 +5,7 @@ def main():
     demo = create_web_demo()
     demo.queue()
     demo.launch(server_name="0.0.0.0", server_port=7860, share=False, inbrowser=True)
+    # demo.launch(share=False, inbrowser=True)
 
 
 if __name__ == "__main__":
