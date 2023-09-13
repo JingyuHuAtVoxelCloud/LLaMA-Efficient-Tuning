@@ -1208,7 +1208,7 @@ if __name__ == "__main__":
         json_config = json.load(file)
 
     config = ChatGLMConfig(**json_config)
-    config.pre_seq_len = 3
+    # config.pre_seq_len = 3
     config.device = 'cuda:0'
     dummy_input = torch.tensor([[7, 6, 0, 0, 1], [1, 2, 3, 0, 0], [0, 0, 0, 4, 5]]).cuda(0)
     model = ChatGLMForConditionalGeneration(config, device='cuda:0')
