@@ -11,8 +11,8 @@
 #     # --finetuning_type lora \
 #     # --checkpoint_dir outputs/output-sft-llama2/checkpoint-24000
 
-CUDA_VISIBLE_DEVICES=4 python ../src/web_demo.py \
+CUDA_VISIBLE_DEVICES=3 python ../src/api_demo.py \
     --model_name_or_path /mnt/eye_team/jyhu/LLM_assets/models/chatglm2-6b \
     --template chatglm2 \
     --finetuning_type lora \
-    --checkpoint_dir ../outputs/Ihin/Ihin_v1.2/sft-chatglm2/checkpoint-20000
+    --checkpoint_dir ../outputs/retina_gpt/sft-chatglm2/checkpoint-100
