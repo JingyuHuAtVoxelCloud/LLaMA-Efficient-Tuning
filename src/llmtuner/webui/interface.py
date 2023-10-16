@@ -59,7 +59,7 @@ def create_web_demo() -> gr.Blocks:
     chat_model = WebChatModel(lazy_init=False)
 
     with gr.Blocks(title="Web Demo", css=CSS) as demo:
-        gr.HTML("""<h1 align="center">Ihin</h1>""")
+        gr.HTML("""<h1 align="center">Ihin-AW-Local</h1>""")
         lang = gr.Dropdown(choices=["en", "zh"], value="en")
 
         _, _, _, chat_elems = create_chat_box(chat_model, visible=True)

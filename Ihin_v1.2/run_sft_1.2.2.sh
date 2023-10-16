@@ -13,7 +13,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 accelerate launch  \
     --dataset_dir /mnt/eye_team/jyhu/Ihin_assets/Ihin_dataset_v1.2 \
     --finetuning_type lora \
     --lora_target all \
-    --output_dir ../outputs/Ihin/Ihin_v1.2.1/sft-chatglm2  \
+    --output_dir ../outputs/Ihin/Ihin_v1.2.2/sft-chatglm2  \
     --overwrite_cache \
     --per_device_train_batch_size 1 \
     --gradient_accumulation_steps 1 \
@@ -21,7 +21,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 accelerate launch  \
     --logging_steps 200 \
     --save_steps 200 \
     --learning_rate 5e-5 \
-    --num_train_epochs 2.0 \
+    --num_train_epochs 20.0 \
     --plot_loss \
     --fp16 \
     --evaluation_strategy steps \
