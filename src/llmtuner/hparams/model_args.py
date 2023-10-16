@@ -1,4 +1,3 @@
-import torch
 from typing import Literal, Optional
 from dataclasses import dataclass, field
 
@@ -18,6 +17,10 @@ class ModelArguments:
     use_fast_tokenizer: Optional[bool] = field(
         default=True,
         metadata={"help": "Whether to use one of the fast tokenizer (backed by the tokenizers library) or not."}
+    )
+    split_special_tokens: Optional[bool] = field(
+        default=False,
+        metadata={"help": "Whether or not the special tokens should be split during the tokenization process."}
     )
     use_auth_token: Optional[bool] = field(
         default=False,
@@ -43,17 +46,25 @@ class ModelArguments:
         default=None,
         metadata={"help": "Adopt scaled rotary positional embeddings."}
     )
-    flash_attn: Optional[bool] = field(
-        default=False,
-        metadata={"help": "Enable flash attention for faster training."}
-    )
     checkpoint_dir: Optional[str] = field(
         default=None,
         metadata={"help": "Path to the directory(s) containing the delta model checkpoints as well as the configurations."}
     )
+    flash_attn: Optional[bool] = field(
+        default=False,
+        metadata={"help": "Enable FlashAttention-2 for faster training."}
+    )
+    shift_attn: Optional[bool] = field(
+        default=False,
+        metadata={"help": "Enable shift short attention (S^2-Attn) proposed by LongLoRA."}
+    )
     reward_model: Optional[str] = field(
         default=None,
         metadata={"help": "Path to the directory containing the checkpoints of the reward model."}
+    )
+    upcast_layernorm: Optional[bool] = field(
+        default=False,
+        metadata={"help": "Whether to upcast the layernorm weights in fp32."}
     )
     plot_loss: Optional[bool] = field(
         default=False,
@@ -63,10 +74,17 @@ class ModelArguments:
         default=None,
         metadata={"help": "Auth token to log in with Hugging Face Hub."}
     )
+    export_dir: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to the directory to save the exported model."}
+    )
 
     def __post_init__(self):
         self.compute_dtype = None
         self.model_max_length = None
+
+        if self.split_special_tokens and self.use_fast_tokenizer:
+            raise ValueError("`split_special_tokens` is only supported for slow tokenizers.")
 
         if self.checkpoint_dir is not None: # support merging multiple lora weights
             self.checkpoint_dir = [cd.strip() for cd in self.checkpoint_dir.split(",")]

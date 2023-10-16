@@ -2,7 +2,7 @@ IGNORE_INDEX = -100
 
 LOG_FILE_NAME = "trainer_log.jsonl"
 
-LAYERNORM_NAMES = ["norm", "ln_f", "ln_attn", "ln_mlp"]
+LAYERNORM_NAMES = ["norm", "ln_f", "ln_attn", "ln_mlp", "ln_1", "ln_2"]
 
 METHODS = ["full", "freeze", "lora"]
 
@@ -51,7 +51,9 @@ SUPPORTED_MODELS = {
     "InternLM-7B-Chat": "internlm/internlm-chat-7b",
     "InternLM-20B-Chat": "internlm/internlm-chat-20b",
     "Qwen-7B": "Qwen/Qwen-7B",
+    "Qwen-14B": "Qwen/Qwen-14B",
     "Qwen-7B-Chat": "Qwen/Qwen-7B-Chat",
+    "Qwen-14B-Chat": "Qwen/Qwen-14B-Chat",
     "XVERSE-13B": "xverse/XVERSE-13B",
     "XVERSE-13B-Chat": "xverse/XVERSE-13B-Chat",
     "ChatGLM2-6B-Chat": "THUDM/chatglm2-6b",

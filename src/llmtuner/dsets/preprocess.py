@@ -22,6 +22,9 @@ def preprocess_dataset(
     column_names = list(next(iter(dataset)).keys())
     template = get_template_and_fix_tokenizer(data_args.template, tokenizer)
 
+    if data_args.train_on_prompt and template.efficient_eos:
+        raise ValueError("Current template does not support `train_on_prompt`.")
+
     def construct_example(examples: Dict[str, List[Any]]) -> Generator[Any, None, None]:
         for i in range(len(examples["prompt"])):
             query, response = examples["prompt"][i], examples["response"][i]
@@ -32,13 +35,12 @@ def preprocess_dataset(
 
     def preprocess_pretrain_dataset(examples: Dict[str, List[Any]]) -> Dict[str, Any]:
         # build grouped texts with format `X1 X2 X3 ...`
-        if isinstance(getattr(tokenizer, "tokenizer", None), tiktoken.Encoding):
-            kwargs = dict(allowed_special="all") # for tiktoken tokenizer (Qwen)
+        if isinstance(getattr(tokenizer, "tokenizer", None), tiktoken.Encoding): # for tiktoken tokenizer (Qwen)
+            kwargs = dict(allowed_special="all")
         else:
             kwargs = dict(add_special_tokens=True)
 
-        if hasattr(tokenizer, "add_bos_token") and hasattr(tokenizer, "add_eos_token"):
-            setattr(tokenizer, "add_bos_token", True) # for LLaMA tokenizer
+        if hasattr(tokenizer, "add_eos_token"): # for LLaMA tokenizer
             setattr(tokenizer, "add_eos_token", True)
 
         tokenized_examples = tokenizer(examples["prompt"], **kwargs)
@@ -74,7 +76,9 @@ def preprocess_dataset(
                 if len(target_ids) > max_target_len:
                     target_ids = target_ids[:max_target_len]
 
-                if turn_idx != 0 and template.efficient_eos:
+                if data_args.train_on_prompt:
+                    source_mask = source_ids
+                elif turn_idx != 0 and template.efficient_eos:
                     source_mask = [tokenizer.eos_token_id] + [IGNORE_INDEX] * (len(source_ids) - 1)
                 else:
                     source_mask = [IGNORE_INDEX] * len(source_ids)
@@ -93,6 +97,40 @@ def preprocess_dataset(
             model_inputs["input_ids"].append(input_ids)
             model_inputs["attention_mask"].append([1] * len(input_ids))
             model_inputs["labels"].append(labels)
+
+        return model_inputs
+
+    def preprocess_packed_supervised_dataset(examples: Dict[str, List[Any]]) -> Dict[str, Any]:
+        # build inputs with format `<bos> X1 Y1 <eos> <bos> X2 Y2 <eos>`
+        # and labels with format `<ignore> ... <ignore> Y1 <eos> <ignore> ... <ignore> Y2 <eos>`
+        model_inputs = {"input_ids": [], "attention_mask": [], "labels": []}
+        input_ids, labels = [], []
+        for query, response, history, system in construct_example(examples):
+            for turn_idx, (source_ids, target_ids) in enumerate(template.encode_multiturn(
+                tokenizer, query, response, history, system
+            )):
+                if data_args.train_on_prompt:
+                    source_mask = source_ids
+                elif turn_idx != 0 and template.efficient_eos:
+                    source_mask = [tokenizer.eos_token_id] + [IGNORE_INDEX] * (len(source_ids) - 1)
+                else:
+                    source_mask = [IGNORE_INDEX] * len(source_ids)
+                input_ids += source_ids + target_ids
+                labels += source_mask + target_ids
+
+        if template.efficient_eos:
+            input_ids += [tokenizer.eos_token_id]
+            labels += [tokenizer.eos_token_id]
+
+        total_length = len(input_ids)
+        block_size = data_args.cutoff_len
+        # we drop the small remainder, and if the total_length < block_size, we exclude this batch
+        total_length = (total_length // block_size) * block_size
+        # split by chunks of cutoff_len
+        for i in range(0, total_length, block_size):
+            model_inputs["input_ids"].append(input_ids[i: i + block_size])
+            model_inputs["attention_mask"].append([1] * block_size)
+            model_inputs["labels"].append(labels[i: i + block_size])
 
         return model_inputs
 
@@ -166,19 +204,19 @@ def preprocess_dataset(
 
     if stage == "pt":
         dataset = dataset.filter(lambda example: example["prompt"])
-        preprocess_function = preprocess_pretrain_dataset
+        preprocess_func = preprocess_pretrain_dataset
         print_function = print_unsupervised_dataset_example
     elif stage == "sft" and not training_args.predict_with_generate:
         dataset = dataset.filter(lambda example: example["prompt"] and example["response"])
-        preprocess_function = preprocess_supervised_dataset
+        preprocess_func = preprocess_packed_supervised_dataset if data_args.sft_packing else preprocess_supervised_dataset
         print_function = print_supervised_dataset_example
     elif stage == "rm":
         dataset = dataset.filter(lambda example: example["prompt"] and len(example["response"]) > 1)
-        preprocess_function = preprocess_pairwise_dataset
+        preprocess_func = preprocess_pairwise_dataset
         print_function = print_pairwise_dataset_example
     else:
         dataset = dataset.filter(lambda example: example["prompt"])
-        preprocess_function = preprocess_unsupervised_dataset
+        preprocess_func = preprocess_unsupervised_dataset
         print_function = print_unsupervised_dataset_example
 
     with training_args.main_process_first(desc="dataset map pre-processing"):
@@ -191,11 +229,15 @@ def preprocess_dataset(
             )
 
         dataset = dataset.map(
-            preprocess_function,
+            preprocess_func,
             batched=True,            
             remove_columns=column_names,
             **kwargs
         )
 
-        print_function(next(iter(dataset)))
+        try:
+            print_function(next(iter(dataset)))
+        except StopIteration:
+            raise ValueError("Empty dataset!")
+
         return dataset
