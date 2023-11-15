@@ -1,5 +1,4 @@
 import os
-import sys
 import torch
 import datasets
 import transformers
@@ -8,6 +7,7 @@ from transformers import HfArgumentParser, Seq2SeqTrainingArguments
 from transformers.trainer_utils import get_last_checkpoint
 
 from llmtuner.extras.logging import get_logger
+from llmtuner.extras.misc import parse_args
 from llmtuner.hparams import (
     ModelArguments,
     DataArguments,
@@ -17,17 +17,6 @@ from llmtuner.hparams import (
 
 
 logger = get_logger(__name__)
-
-
-def _parse_args(parser: HfArgumentParser, args: Optional[Dict[str, Any]] = None) -> Tuple[Any]:
-    if args is not None:
-        return parser.parse_dict(args)
-    elif len(sys.argv) == 2 and sys.argv[1].endswith(".yaml"):
-        return parser.parse_yaml_file(os.path.abspath(sys.argv[1]))
-    elif len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
-        return parser.parse_json_file(os.path.abspath(sys.argv[1]))
-    else:
-        return parser.parse_args_into_dataclasses()
 
 
 def parse_train_args(
@@ -46,7 +35,7 @@ def parse_train_args(
         FinetuningArguments,
         GeneratingArguments
     ))
-    return _parse_args(parser, args)
+    return parse_args(parser, args)
 
 
 def parse_infer_args(
@@ -63,7 +52,7 @@ def parse_infer_args(
         FinetuningArguments,
         GeneratingArguments
     ))
-    return _parse_args(parser, args)
+    return parse_args(parser, args)
 
 
 def get_train_args(
@@ -100,14 +89,16 @@ def get_train_args(
     if finetuning_args.stage == "sft" and training_args.do_predict and not training_args.predict_with_generate:
         raise ValueError("Please enable `predict_with_generate` to save model predictions.")
 
-    if finetuning_args.stage in ["rm", "ppo"] and finetuning_args.finetuning_type != "lora":
-        raise ValueError("RM and PPO stages can only be performed with the LoRA method.")
+    if finetuning_args.stage in ["rm", "ppo"]:
+        if finetuning_args.finetuning_type != "lora":
+            raise ValueError("RM and PPO stages can only be performed with the LoRA method.")
+        if training_args.resume_from_checkpoint is not None:
+            raise ValueError("RM and PPO stages do not support `resume_from_checkpoint`.")
+        if training_args.load_best_model_at_end:
+            raise ValueError("RM and PPO stages do not support `load_best_model_at_end`.")
 
-    if finetuning_args.stage in ["rm", "ppo"] and training_args.resume_from_checkpoint is not None:
-        raise ValueError("RM and PPO stages do not support `resume_from_checkpoint`.")
-
-    if finetuning_args.stage in ["ppo", "dpo"] and not training_args.do_train:
-        raise ValueError("PPO and DPO stages can only be performed at training.")
+    if finetuning_args.stage == "ppo" and not training_args.do_train:
+        raise ValueError("PPO training does not support evaluation.")
 
     if finetuning_args.stage in ["rm", "dpo"]:
         for dataset_attr in data_args.dataset_list:
@@ -116,9 +107,6 @@ def get_train_args(
 
     if finetuning_args.stage == "ppo" and model_args.reward_model is None:
         raise ValueError("Reward model is necessary for PPO training.")
-
-    if finetuning_args.stage == "ppo" and data_args.streaming:
-        raise ValueError("Streaming mode does not suppport PPO training currently.")
 
     if finetuning_args.stage == "ppo" and model_args.shift_attn:
         raise ValueError("PPO training is incompatible with S^2-Attn.")
@@ -135,16 +123,12 @@ def get_train_args(
     if model_args.quantization_bit is not None and finetuning_args.finetuning_type != "lora":
         raise ValueError("Quantization is only compatible with the LoRA method.")
 
-    if model_args.checkpoint_dir is not None:
-        if finetuning_args.finetuning_type != "lora" and len(model_args.checkpoint_dir) != 1:
-            raise ValueError("Only LoRA tuning accepts multiple checkpoints.")
-
-        if model_args.quantization_bit is not None:
-            if len(model_args.checkpoint_dir) != 1:
-                raise ValueError("Quantized model only accepts a single checkpoint. Merge them first.")
-            
-            if not finetuning_args.resume_lora_training:
-                raise ValueError("Quantized model cannot create new LoRA weight. Merge them first.")
+    if (
+        model_args.checkpoint_dir is not None
+        and len(model_args.checkpoint_dir) != 1
+        and finetuning_args.finetuning_type != "lora"
+    ):
+        raise ValueError("Only LoRA tuning accepts multiple checkpoints.")
 
     if training_args.do_train and model_args.quantization_bit is not None and (not finetuning_args.upcast_layernorm):
         logger.warning("We recommend enable `upcast_layernorm` in quantized training.")
@@ -219,11 +203,11 @@ def get_infer_args(
     if model_args.quantization_bit is not None and finetuning_args.finetuning_type != "lora":
         raise ValueError("Quantization is only compatible with the LoRA method.")
 
-    if model_args.checkpoint_dir is not None:
-        if finetuning_args.finetuning_type != "lora" and len(model_args.checkpoint_dir) != 1:
-            raise ValueError("Only LoRA tuning accepts multiple checkpoints.")
-
-        if model_args.quantization_bit is not None and len(model_args.checkpoint_dir) != 1:
-            raise ValueError("Quantized model only accepts a single checkpoint. Merge them first.")
+    if (
+        model_args.checkpoint_dir is not None
+        and len(model_args.checkpoint_dir) != 1
+        and finetuning_args.finetuning_type != "lora"
+    ):
+        raise ValueError("Only LoRA tuning accepts multiple checkpoints.")
 
     return model_args, data_args, finetuning_args, generating_args

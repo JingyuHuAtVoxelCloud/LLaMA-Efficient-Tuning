@@ -1,10 +1,11 @@
 import os
+import sys
 import math
 import torch
 from tqdm import tqdm
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
-from transformers import GenerationConfig, Trainer, TrainerState, TrainerControl
+from transformers import BatchEncoding, GenerationConfig, Trainer, TrainerState, TrainerControl
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 
 from trl import PPOTrainer
@@ -39,9 +40,6 @@ class CustomPPOTrainer(PPOTrainer, Trainer):
         **kwargs
     ):
         PPOTrainer.__init__(self, **kwargs)
-        if getattr(self.accelerator.state, "deepspeed_plugin", None) is not None:
-            raise ValueError("PPOTrainer is incompatible with DeepSpeed.")
-
         self.args = training_args
         self.model_args = model_args
         self.finetuning_args = finetuning_args
@@ -54,6 +52,8 @@ class CustomPPOTrainer(PPOTrainer, Trainer):
         self.control = TrainerControl()
         self.log_callback, self.save_callback = callbacks[0], callbacks[1]
         assert isinstance(self.log_callback, LogCallback) and isinstance(self.save_callback, SavePeftModelCallback)
+        if self.args.max_steps > 0:
+            logger.info("max_steps is given, it will override any value given in num_train_epochs")
 
     def ppo_train(self) -> None:
         r"""
@@ -62,10 +62,17 @@ class CustomPPOTrainer(PPOTrainer, Trainer):
         total_train_batch_size = (
             self.args.per_device_train_batch_size * self.args.gradient_accumulation_steps * self.args.world_size
         )
-        len_dataloader = len(self.dataloader)
-        num_examples = len(self.dataset)
-        num_train_epochs = self.args.num_train_epochs
-        max_steps = math.ceil(num_train_epochs * len_dataloader)
+        if self.args.max_steps > 0:
+            num_examples = total_train_batch_size * self.args.max_steps
+            num_train_epochs = sys.maxsize
+            max_steps = self.args.max_steps
+            steps_in_epoch = self.args.max_steps * self.args.gradient_accumulation_steps
+        else:
+            len_dataloader = len(self.dataloader)
+            num_examples = len(self.dataset)
+            num_train_epochs = self.args.num_train_epochs
+            max_steps = math.ceil(num_train_epochs * len_dataloader)
+            steps_in_epoch = len_dataloader
 
         self.state.max_steps = max_steps
         self.state.num_train_epochs = num_train_epochs
@@ -84,14 +91,16 @@ class CustomPPOTrainer(PPOTrainer, Trainer):
 
         unwrapped_model: "AutoModelForCausalLMWithValueHead" = self.accelerator.unwrap_model(self.model)
         dataiter = iter(self.dataloader)
-        steps_trained = 0
         loss_meter = AverageMeter()
         reward_meter = AverageMeter()
         self.log_callback.on_train_begin(self.args, self.state, self.control)
 
         for step in tqdm(range(max_steps), disable=not self.is_local_process_zero()):
-            batch = next(dataiter)
-            steps_trained += 1
+            try:
+                batch = next(dataiter)
+            except StopIteration:
+                dataiter = iter(self.dataloader)
+                batch = next(dataiter)
 
             # Cast to inference mode
             unwrapped_model.gradient_checkpointing_disable()
@@ -99,9 +108,14 @@ class CustomPPOTrainer(PPOTrainer, Trainer):
             self.model.eval()
 
             # Get inputs
-            queries, responses = self.get_inputs(batch)
             self.tokenizer.padding_side = "right" # change padding side
-            rewards = self.get_rewards(queries, responses, unwrapped_model)
+            queries, responses, rewards = [], [], []
+            for idx in range(0, self.config.batch_size, self.config.mini_batch_size):
+                mini_batch_queries, mini_batch_responses = self.get_inputs(batch[idx:idx+self.config.mini_batch_size])
+                mini_batch_rewards = self.get_rewards(mini_batch_queries, mini_batch_responses, unwrapped_model)
+                queries.extend(mini_batch_queries)
+                responses.extend(mini_batch_responses)
+                rewards.extend(mini_batch_rewards)
 
             # Cast to training mode
             unwrapped_model.gradient_checkpointing_enable()
@@ -130,7 +144,7 @@ class CustomPPOTrainer(PPOTrainer, Trainer):
                     loss=round(loss_meter.avg, 4),
                     reward=round(reward_meter.avg, 4),
                     learning_rate=stats["ppo/learning_rate"],
-                    epoch=round(step / len_dataloader, 2)
+                    epoch=round(step / steps_in_epoch, 2)
                 )
                 tqdm.write(str(logs))
                 logs["step"] = step
@@ -150,17 +164,13 @@ class CustomPPOTrainer(PPOTrainer, Trainer):
             if self.control.should_epoch_stop or self.control.should_training_stop:
                 break
 
-            if steps_trained == len_dataloader:
-                dataiter = iter(self.dataloader)
-                steps_trained = 0
-
         self.log_callback.on_train_end(self.args, self.state, self.control)
         self.save_callback.on_train_end(
             self.args, self.state, self.control, model=self.accelerator.unwrap_model(self.model)
         )
 
     @torch.no_grad()
-    def get_inputs(self, batch: Dict[str, torch.Tensor]) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+    def get_inputs(self, batch: BatchEncoding) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
         r"""
         Generates model's responses given queries.
         """
@@ -180,15 +190,13 @@ class CustomPPOTrainer(PPOTrainer, Trainer):
         query, response = batch["input_ids"].detach().cpu(), response[:, batch["input_ids"].size(-1):].detach().cpu()
         queries, responses = [], []
         for i in range(len(query)):
-            query_length = (query[i] != self.tokenizer.pad_token_id).nonzero()[0]
+            query_length = (query[i] != self.tokenizer.pad_token_id).nonzero()[0].item()
             response_index = (response[i] != self.tokenizer.pad_token_id).nonzero()
 
             if len(response_index) == 0:
                 response_length = 1 # allow empty response
-            elif self.tokenizer.pad_token_id == self.tokenizer.eos_token_id:
-                response_length = response_index[-1] + 2 # save the EOS token
             else:
-                response_length = response_index[-1] + 1
+                response_length = response_index[-1].item() + 1
 
             queries.append(query[i, query_length:]) # remove padding from left
             responses.append(response[i, :response_length]) # remove padding from right
@@ -216,13 +224,14 @@ class CustomPPOTrainer(PPOTrainer, Trainer):
 
         rewards = []
         for i in range(values.size(0)):
-            end_index = batch["attention_mask"][i].nonzero()[-1] # use the score on the EOS token
+            end_indexes = (batch["input_ids"][i] != self.tokenizer.pad_token_id).nonzero()
+            end_index = end_indexes[-1].item() if len(end_indexes) else 0
             rewards.append(values[i, end_index].float().detach().cpu()) # use fp32 type
 
         replace_model(unwrapped_model, target="default")
         return rewards
 
-    @PPODecorators.empty_cuda_cache()
+    @PPODecorators.empty_device_cache()
     def batched_forward_pass(
         self,
         model: "AutoModelForCausalLMWithValueHead",
@@ -266,7 +275,7 @@ class CustomPPOTrainer(PPOTrainer, Trainer):
             for j in range(len(query_batch)):
                 start = len(query_batch[j]) - 1
                 if attention_mask[j, 0] == 0: # offset left padding
-                    start += attention_mask[j, :].nonzero()[0]
+                    start += attention_mask[j, :].nonzero()[0].item()
                 end = start + len(response_batch[j])
 
                 if response_masks is not None:

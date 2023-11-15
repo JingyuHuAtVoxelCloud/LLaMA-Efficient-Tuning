@@ -11,11 +11,17 @@ class DatasetAttr:
     dataset_name: Optional[str] = None
     dataset_sha1: Optional[str] = None
     system_prompt: Optional[str] = None
+    subset: Optional[str] = None
     ranking: Optional[bool] = False
+    formatting: Optional[Literal["alpaca", "sharegpt"]] = "alpaca"
+
     prompt: Optional[str] = "instruction"
     query: Optional[str] = "input"
     response: Optional[str] = "output"
     history: Optional[str] = None
+    messages: Optional[str] = "conversations"
+    role: Optional[str] = "from"
+    content: Optional[str] = "value"
 
     def __repr__(self) -> str:
         return self.dataset_name
@@ -36,7 +42,7 @@ class DataArguments:
     )
     dataset_dir: Optional[str] = field(
         default="data",
-        metadata={"help": "The name of the folder containing datasets."}
+        metadata={"help": "Path to the folder containing the datasets."}
     )
     split: Optional[str] = field(
         default="train",
@@ -45,6 +51,10 @@ class DataArguments:
     cutoff_len: Optional[int] = field(
         default=1024,
         metadata={"help": "The maximum length of the model inputs after tokenization."}
+    )
+    reserved_label_len: Optional[int] = field(
+        default=1,
+        metadata={"help": "The maximum length reserved for label after tokenization."}
     )
     train_on_prompt: Optional[bool] = field(
         default=False,
@@ -104,6 +114,9 @@ class DataArguments:
     )
 
     def __post_init__(self):
+        if self.reserved_label_len >= self.cutoff_len:
+            raise ValueError("`reserved_label_len` must be smaller than `cutoff_len`.")
+
         if self.streaming and self.val_size > 1e-6 and self.val_size < 1:
             raise ValueError("Streaming mode should have an integer val size.")
 
@@ -152,7 +165,12 @@ class DataArguments:
                 dataset_attr.query = dataset_info[name]["columns"].get("query", None)
                 dataset_attr.response = dataset_info[name]["columns"].get("response", None)
                 dataset_attr.history = dataset_info[name]["columns"].get("history", None)
+                dataset_attr.messages = dataset_info[name]["columns"].get("messages", None)
+                dataset_attr.role = dataset_info[name]["columns"].get("role", None)
+                dataset_attr.content = dataset_info[name]["columns"].get("content", None)
 
+            dataset_attr.subset = dataset_info[name].get("subset", None)
             dataset_attr.ranking = dataset_info[name].get("ranking", False)
+            dataset_attr.formatting = dataset_info[name].get("formatting", "alpaca")
             dataset_attr.system_prompt = prompt_list[i]
             self.dataset_list.append(dataset_attr)
