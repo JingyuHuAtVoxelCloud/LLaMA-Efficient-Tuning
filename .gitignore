@@ -163,8 +163,3 @@ cython_debug/
 user.config
 saves/
 cache/
-outputs
-.vscode
-data
-
-
