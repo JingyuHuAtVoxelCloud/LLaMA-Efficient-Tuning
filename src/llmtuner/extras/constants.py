@@ -40,6 +40,10 @@ TRAINING_STAGES = {
     "Pre-Training": "pt"
 }
 
+V_HEAD_WEIGHTS_NAME = "value_head.bin"
+
+V_HEAD_SAFE_WEIGHTS_NAME = "value_head.safetensors"
+
 class DownloadSource(str, Enum):
     DEFAULT = "hf"
     MODELSCOPE = "ms"
@@ -638,6 +642,25 @@ register_model_group(
         }
     },
     template="yi"
+)
+
+
+register_model_group(
+    models={
+        "Yuan2-2B-Chat": {
+            DownloadSource.DEFAULT: "IEITYuan/Yuan2-2B-hf",
+            DownloadSource.MODELSCOPE: "YuanLLM/Yuan2.0-2B-hf"
+        },
+        "Yuan2-51B-Chat": {
+            DownloadSource.DEFAULT: "IEITYuan/Yuan2-51B-hf",
+            DownloadSource.MODELSCOPE: "YuanLLM/Yuan2.0-51B-hf"
+        },
+        "Yuan2-102B-Chat": {
+            DownloadSource.DEFAULT: "IEITYuan/Yuan2-102B-hf",
+            DownloadSource.MODELSCOPE: "YuanLLM/Yuan2.0-102B-hf"
+        }
+    },
+    template="yuan"
 )
 
 
