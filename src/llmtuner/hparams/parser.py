@@ -8,8 +8,10 @@ import torch
 import transformers
 from transformers import HfArgumentParser, Seq2SeqTrainingArguments
 from transformers.trainer_utils import get_last_checkpoint
+from transformers.utils.versions import require_version
 
 from ..extras.logging import get_logger
+from ..extras.packages import is_unsloth_available
 from .data_args import DataArguments
 from .evaluation_args import EvaluationArguments
 from .finetuning_args import FinetuningArguments
@@ -26,6 +28,17 @@ _INFER_ARGS = [ModelArguments, DataArguments, FinetuningArguments, GeneratingArg
 _INFER_CLS = Tuple[ModelArguments, DataArguments, FinetuningArguments, GeneratingArguments]
 _EVAL_ARGS = [ModelArguments, DataArguments, EvaluationArguments, FinetuningArguments]
 _EVAL_CLS = Tuple[ModelArguments, DataArguments, EvaluationArguments, FinetuningArguments]
+
+
+def _check_dependencies(disabled: bool) -> None:
+    if disabled:
+        logger.warning("Version checking has been disabled, may lead to unexpected behaviors.")
+    else:
+        require_version("transformers>=4.37.2", "To fix: pip install transformers>=4.37.2")
+        require_version("datasets>=2.14.3", "To fix: pip install datasets>=2.14.3")
+        require_version("accelerate>=0.21.0", "To fix: pip install accelerate>=0.21.0")
+        require_version("peft>=0.8.2", "To fix: pip install peft>=0.8.2")
+        require_version("trl>=0.7.6", "To fix: pip install trl>=0.7.6")
 
 
 def _parse_args(parser: "HfArgumentParser", args: Optional[Dict[str, Any]] = None) -> Tuple[Any]:
@@ -63,12 +76,11 @@ def _verify_model_args(model_args: "ModelArguments", finetuning_args: "Finetunin
         if model_args.adapter_name_or_path is not None and finetuning_args.create_new_adapter:
             raise ValueError("Cannot create new adapter upon a quantized model.")
 
-    if model_args.adapter_name_or_path is not None and len(model_args.adapter_name_or_path) != 1:
-        if finetuning_args.finetuning_type != "lora":
-            raise ValueError("Multiple adapters are only available for LoRA tuning.")
-
-        if model_args.quantization_bit is not None:
+        if model_args.adapter_name_or_path is not None and len(model_args.adapter_name_or_path) != 1:
             raise ValueError("Quantized model only accepts a single adapter. Merge them first.")
+
+    if model_args.adapter_name_or_path is not None and finetuning_args.finetuning_type != "lora":
+        raise ValueError("Adapter is only valid for the LoRA method.")
 
 
 def _parse_train_args(args: Optional[Dict[str, Any]] = None) -> _TRAIN_CLS:
@@ -121,10 +133,29 @@ def get_train_args(args: Optional[Dict[str, Any]] = None) -> _TRAIN_CLS:
     if training_args.do_train and training_args.predict_with_generate:
         raise ValueError("`predict_with_generate` cannot be set as True while training.")
 
+    if (
+        training_args.do_train
+        and finetuning_args.finetuning_type == "freeze"
+        and finetuning_args.name_module_trainable is None
+    ):
+        raise ValueError("Please specify `name_module_trainable` in Freeze training.")
+
     if training_args.do_train and finetuning_args.finetuning_type == "lora" and finetuning_args.lora_target is None:
         raise ValueError("Please specify `lora_target` in LoRA training.")
 
+    if training_args.do_train and model_args.use_unsloth and not is_unsloth_available:
+        raise ValueError("Install Unsloth: https://github.com/unslothai/unsloth")
+
     _verify_model_args(model_args, finetuning_args)
+    _check_dependencies(disabled=finetuning_args.disable_version_checking)
+
+    if (
+        training_args.do_train
+        and finetuning_args.finetuning_type == "lora"
+        and model_args.resize_vocab
+        and finetuning_args.additional_target is None
+    ):
+        logger.warning("Add token embeddings to `additional_target` to make the added tokens trainable.")
 
     if training_args.do_train and model_args.quantization_bit is not None and (not model_args.upcast_layernorm):
         logger.warning("We recommend enable `upcast_layernorm` in quantized training.")
@@ -138,7 +169,7 @@ def get_train_args(args: Optional[Dict[str, Any]] = None) -> _TRAIN_CLS:
     if (not training_args.do_train) and finetuning_args.stage == "dpo" and finetuning_args.ref_model is None:
         logger.warning("Specify `ref_model` for computing rewards at evaluation.")
 
-    # postprocess training_args
+    # Post-process training arguments
     if (
         training_args.local_rank != -1
         and training_args.ddp_find_unused_parameters is None
@@ -151,7 +182,9 @@ def get_train_args(args: Optional[Dict[str, Any]] = None) -> _TRAIN_CLS:
 
     if finetuning_args.stage in ["rm", "ppo"] and finetuning_args.finetuning_type in ["full", "freeze"]:
         can_resume_from_checkpoint = False
-        training_args.resume_from_checkpoint = None
+        if training_args.resume_from_checkpoint is not None:
+            logger.warning("Cannot resume from checkpoint in current stage.")
+            training_args.resume_from_checkpoint = None
     else:
         can_resume_from_checkpoint = True
 
@@ -187,7 +220,7 @@ def get_train_args(args: Optional[Dict[str, Any]] = None) -> _TRAIN_CLS:
             )
         )
 
-    # postprocess model_args
+    # Post-process model arguments
     model_args.compute_dtype = (
         torch.bfloat16 if training_args.bf16 else (torch.float16 if training_args.fp16 else None)
     )
@@ -205,7 +238,6 @@ def get_train_args(args: Optional[Dict[str, Any]] = None) -> _TRAIN_CLS:
     )
     logger.info(f"Training/evaluation parameters {training_args}")
 
-    # Set seed before initializing model.
     transformers.set_seed(training_args.seed)
 
     return model_args, data_args, training_args, finetuning_args, generating_args
@@ -213,24 +245,26 @@ def get_train_args(args: Optional[Dict[str, Any]] = None) -> _TRAIN_CLS:
 
 def get_infer_args(args: Optional[Dict[str, Any]] = None) -> _INFER_CLS:
     model_args, data_args, finetuning_args, generating_args = _parse_infer_args(args)
+
     _set_transformers_logging()
+    _verify_model_args(model_args, finetuning_args)
+    _check_dependencies(disabled=finetuning_args.disable_version_checking)
 
     if data_args.template is None:
         raise ValueError("Please specify which `template` to use.")
-
-    _verify_model_args(model_args, finetuning_args)
 
     return model_args, data_args, finetuning_args, generating_args
 
 
 def get_eval_args(args: Optional[Dict[str, Any]] = None) -> _EVAL_CLS:
     model_args, data_args, eval_args, finetuning_args = _parse_eval_args(args)
+
     _set_transformers_logging()
+    _verify_model_args(model_args, finetuning_args)
+    _check_dependencies(disabled=finetuning_args.disable_version_checking)
 
     if data_args.template is None:
         raise ValueError("Please specify which `template` to use.")
-
-    _verify_model_args(model_args, finetuning_args)
 
     transformers.set_seed(eval_args.seed)
 
