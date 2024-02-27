@@ -1,0 +1,23 @@
+stage: sft
+model_name_or_path: /mnt/local/jyhu/llm_assets/models/chatglm2-6b
+template: chatglm2
+do_train: true
+dataset: self_cognition,Ihin_sft_v1.1,Ihin_sft_v1.2
+dataset_dir: /mnt/local/jyhu/llm_assets/dataset/Ihin_AW
+finetuning_type: lora
+lora_target: query_key_value # all
+output_dir: /mnt/local/jyhu/LLM-Train/outputs/Ihin_AW/Ihin_AW_v1.2/sft-chatglm2
+overwrite_cache: true
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 1
+lr_scheduler_type: cosine
+logging_steps: 200
+save_steps: 200
+learning_rate: 0.00005 # 5e-5
+num_train_epochs: 20.0
+plot_loss: true
+fp16: true
+evaluation_strategy: steps
+load_best_model_at_end: true
+val_size: 0.001
+preprocessing_num_workers: 32

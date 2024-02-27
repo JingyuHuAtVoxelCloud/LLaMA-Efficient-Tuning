@@ -1,0 +1,25 @@
+stage: sft
+model_name_or_path: /mnt/local/jyhu/llm_assets/models/openchat_3.5
+template: openchat
+do_train: true
+dataset: self_cognition,huatuo_encyclopedia_train
+dataset_dir: /mnt/local/jyhu/llm_assets/dataset/Retina_GPT
+finetuning_type: lora
+lora_target: q_proj,v_proj
+output_dir: /mnt/local/jyhu/LLM-Train/outputs/retina_gpt/openchat/sft-lora-openchat
+overwrite_cache: true
+per_device_train_batch_size: 32
+gradient_accumulation_steps: 4
+lr_scheduler_type: cosine
+logging_steps: 100
+save_steps: 100
+learning_rate: 0.00005 # 5e-5
+num_train_epochs: 2.0
+plot_loss: true
+fp16: true
+evaluation_strategy: steps
+load_best_model_at_end: true
+val_size: 0.001
+preprocessing_num_workers: 32
+overwrite_output_dir: true
+# max_samples: 200000

@@ -1,0 +1,10 @@
+stage: sft
+model_name_or_path: /mnt/local/jyhu/llm_assets/models/chatglm2-6b
+do_predict: true
+dataset: huatuo_encyclopedia_test
+dataset_dir: /mnt/local/jyhu/llm_assets/dataset/Retina_GPT
+template: chatglm2
+finetuning_type: lora
+output_dir: /mnt/local/jyhu/LLM-Train/outputs/openmodel/chatglm2
+per_device_eval_batch_size: 20
+predict_with_generate: true

@@ -1,0 +1,10 @@
+stage: sft
+model_name_or_path: /mnt/eye_team/jyhu/retina_gpt_assets/share/retina_gpt_v0-1
+do_predict: true
+dataset: self_cognition
+dataset_dir: /mnt/eye_team/jyhu/retina_gpt_assets/preprocessed
+template: chatglm2
+finetuning_type: lora
+output_dir: outputs/retina_gpt/sft-chatglm2
+per_device_eval_batch_size: 8
+predict_with_generate: true
