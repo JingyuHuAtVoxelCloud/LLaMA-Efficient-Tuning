@@ -1,13 +1,22 @@
-from typing import TYPE_CHECKING, Optional, Union
+import math
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Union
 
 import torch
+from transformers.optimization import get_scheduler
+from transformers.utils.versions import require_version
 
 from ..extras.logging import get_logger
+from ..extras.packages import is_galore_available
 from ..hparams import FinetuningArguments, ModelArguments
 from ..model import load_model_and_tokenizer, load_valuehead_params
 
 
+if is_galore_available():
+    from galore_torch import GaLoreAdafactor, GaLoreAdamW, GaLoreAdamW8bit
+
+
 if TYPE_CHECKING:
+    from datasets import Dataset, IterableDataset
     from transformers import Seq2SeqTrainingArguments, Trainer
     from transformers.modeling_utils import PreTrainedModel
     from trl import AutoModelForCausalLMWithValueHead
@@ -16,6 +25,18 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
+
+
+class DummyOptimizer(torch.optim.Optimizer):
+    def __init__(self, *args, **kwargs):
+        dummy_tensor = torch.randn(1, 1)
+        super().__init__([dummy_tensor], {"lr": 1e-3})
+
+    def zero_grad(self, set_to_none: bool = True) -> None:
+        pass
+
+    def step(self, closure: Optional[Callable[[], float]] = None) -> Optional[float]:
+        pass
 
 
 def create_modelcard_and_push(
@@ -40,7 +61,7 @@ def create_modelcard_and_push(
 
 
 def create_ref_model(
-    model_args: "ModelArguments", finetuning_args: "FinetuningArguments", add_valuehead: Optional[bool] = False
+    model_args: "ModelArguments", finetuning_args: "FinetuningArguments", add_valuehead: bool = False
 ) -> Union["PreTrainedModel", "AutoModelForCausalLMWithValueHead"]:
     r"""
     Creates reference model for PPO/DPO training. Evaluation mode is not supported.
@@ -118,3 +139,108 @@ def create_reward_model(
         logger.info("Loaded full weights of reward model from {}".format(finetuning_args.reward_model))
         logger.warning("Please ensure the ppo model and reward model share SAME tokenizer and vocabulary.")
         return reward_model
+
+
+def create_custom_optimzer(
+    model: "PreTrainedModel",
+    dataset: Union["Dataset", "IterableDataset"],
+    training_args: "Seq2SeqTrainingArguments",
+    finetuning_args: "FinetuningArguments",
+) -> Optional["torch.optim.Optimizer"]:
+    if not finetuning_args.use_galore:
+        return None
+
+    require_version("galore_torch", "To fix: pip install git+https://github.com/hiyouga/GaLore.git")
+    galore_params: List[torch.nn.Parameter] = []
+    galore_targets = finetuning_args.galore_target.split(",")
+
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.Linear) and any(target in name for target in galore_targets):
+            for param in module.parameters():
+                if param.requires_grad and len(param.shape) > 1:
+                    galore_params.append(param)
+
+    id_galore_params = {id(param) for param in galore_params}
+    trainable_params = filter(lambda param: param.requires_grad, model.parameters())
+    non_galore_params = [param for param in trainable_params if id(param) not in id_galore_params]
+
+    if training_args.optim == "adamw_torch":
+        optim_class = GaLoreAdamW
+        optim_kwargs = {
+            "lr": training_args.learning_rate,
+            "eps": training_args.adam_epsilon,
+            "betas": (training_args.adam_beta1, training_args.adam_beta2),
+            "weight_decay": training_args.weight_decay,
+        }
+
+    elif training_args.optim in ["adamw_bnb_8bit", "adamw_8bit", "paged_adamw_8bit"]:
+        optim_class = GaLoreAdamW8bit
+        optim_kwargs = {
+            "lr": training_args.learning_rate,
+            "eps": training_args.adam_epsilon,
+            "betas": (training_args.adam_beta1, training_args.adam_beta2),
+            "weight_decay": training_args.weight_decay,
+            "optim_bits": 8,
+            "is_paged": "paged" in training_args.optim,
+        }
+
+    elif training_args.optim == "adafactor":
+        optim_class = GaLoreAdafactor
+        optim_kwargs = {
+            "lr": training_args.learning_rate,
+            "weight_decay": training_args.weight_decay,
+        }
+
+    else:
+        raise NotImplementedError("Unknow optim: {}".format(training_args.optim))
+
+    galore_kwargs = {
+        "rank": finetuning_args.galore_rank,
+        "update_proj_gap": finetuning_args.galore_update_interval,
+        "scale": finetuning_args.galore_scale,
+        "proj_type": finetuning_args.galore_proj_type,
+    }
+
+    if finetuning_args.galore_layerwise:
+        if training_args.gradient_accumulation_steps != 1:
+            raise ValueError("Per-layer GaLore does not support gradient accumulation.")
+
+        if training_args.max_steps > 0:
+            num_training_steps = training_args.max_steps
+        else:
+            total_train_batch_size = training_args.per_device_train_batch_size * training_args.world_size
+            num_training_steps = training_args.num_train_epochs * math.ceil(len(dataset) / total_train_batch_size)
+
+        optimizer_dict: Dict["torch.Tensor", "torch.optim.Optimizer"] = {}
+        for param in non_galore_params:
+            param_groups = [dict(params=[param])]
+            optimizer_dict[param] = optim_class(param_groups, **optim_kwargs)
+        for param in galore_params:
+            param_groups = [dict(params=[param], **galore_kwargs)]
+            optimizer_dict[param] = optim_class(param_groups, **optim_kwargs)
+
+        scheduler_dict: Dict["torch.Tensor", "torch.optim.lr_scheduler.LRScheduler"] = {}
+        for param in non_galore_params + galore_params:
+            scheduler_dict[param] = get_scheduler(
+                training_args.lr_scheduler_type,
+                optimizer=optimizer_dict[param],
+                num_warmup_steps=training_args.get_warmup_steps(num_training_steps) * 2,
+                num_training_steps=num_training_steps * 2,
+            )
+
+        def optimizer_hook(param: "torch.Tensor"):
+            if param.grad is not None:
+                optimizer_dict[param].step()
+                optimizer_dict[param].zero_grad()
+                scheduler_dict[param].step()
+
+        for param in non_galore_params + galore_params:
+            param.register_post_accumulate_grad_hook(optimizer_hook)
+
+        optimizer = DummyOptimizer()
+    else:
+        param_groups = [dict(params=non_galore_params), dict(params=galore_params, **galore_kwargs)]
+        optimizer = optim_class(param_groups, **optim_kwargs)
+
+    logger.info("Using GaLore optimizer, may cause hanging at the start of training, wait patiently.")
+    return optimizer
