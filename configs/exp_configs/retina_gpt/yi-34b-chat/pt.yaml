@@ -1,0 +1,24 @@
+stage: pt
+model_name_or_path: /mnt/local/jyhu/llm_assets/models/Yi-34B-Chat
+do_train: true
+dataset: retina_pretrain,case_report
+dataset_dir: /mnt/local/jyhu/llm_assets/dataset/Retina_GPT
+template: yi
+finetuning_type: lora
+lora_target: all
+output_dir: /mnt/local/jyhu/LLM-Train/outputs/retina_gpt/pt-yi-34b-chat
+overwrite_cache: true
+per_device_train_batch_size: 4
+gradient_accumulation_steps: 4
+lr_scheduler_type: cosine
+logging_steps: 100
+save_steps: 100
+learning_rate: 0.00005 # 5e-5
+num_train_epochs: 3
+plot_loss: true
+fp16: true
+evaluation_strategy: steps
+load_best_model_at_end: true
+preprocessing_num_workers: 64
+val_size: 0.001
+# max_samples: 2000
